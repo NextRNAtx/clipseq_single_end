@@ -619,10 +619,10 @@ process cutadapt {
     script: // ln -s $reads ${name}.fastq.gz There is original file in testing folder put the "ln -s" back after testing is complete
     """
     
-    ln -s $r_1 ${name}.reads.fastq.gz
+    ln -s $r ${name}.reads.fastq.gz
     cutadapt -j $task.cpus -a ${params.adapter}  -m 12 -o ${name}.reads.trimmed.fastq.gz ${name}.reads.fastq.gz > ${name}.reads_cutadapt.log 
     
-    ln -s $c_1 ${name}.control.fastq.gz
+    ln -s $c ${name}.control.fastq.gz
     cutadapt -j $task.cpus -a ${params.adapter} -m 12 -o ${name}.control.trimmed.fastq.gz ${name}.control.fastq.gz > ${name}.control_cutadapt.log
     """
 }
