@@ -549,12 +549,12 @@ process fastqc {
 
     """
     cp ${read} ${new_read}
-    fastqc --quiet --threads $task.cpus ${new_read_1}
+    fastqc --quiet --threads $task.cpus ${new_read}
     mv ${new_read_simple}*.html ${name}_r_fastqc.html
     mv ${new_read_simple}*.zip ${name}_r_fastqc.zip
 
     cp ${control} ${new_control}
-    fastqc --quiet --threads $task.cpus ${new_control_1}
+    fastqc --quiet --threads $task.cpus ${new_control}
     mv ${new_control_simple}*.html ${name}_control_fastqc.html
     mv ${new_control_simple}*.zip ${name}_control_fastqc.zip
 
