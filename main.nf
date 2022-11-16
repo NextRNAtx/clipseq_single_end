@@ -1015,8 +1015,8 @@ if ('paraclu' in callers) {
 if ('pureclip' in callers) {
     process pureclip_peak_call {
         tag "$name"
-        cpus 16
-        memory '36 GB'
+        cpus 6
+        memory '64 GB'
         // label 'process_high'
         publishDir "${params.outdir}/pureclip", mode: params.publish_dir_mode
 
