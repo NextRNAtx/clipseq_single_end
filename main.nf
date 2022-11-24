@@ -582,12 +582,14 @@ if (params.move_umi) {
         """
         umi_tools \\
             extract \\
+            --bc-pattern=NNNNNNNNNN \\
             -p "$params.move_umi" \\
             -I $r \\
             -S ${name}.r.umi.fastq.gz
 
         umi_tools \\
             extract \\
+            --bc-pattern=NNNNNNNNNN \\
             -p "$params.move_umi" \\
             -I $c \\
             -S ${name}.c.umi.fastq.gz
