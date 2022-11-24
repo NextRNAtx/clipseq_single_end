@@ -114,7 +114,7 @@
                 "move_umi": {
                     "type": "string",
                     "fa_icon": "fas fa-barcode",
-                    "default": "False",
+                    "default": false,
                     "description": "UMI format to move to FastQ header (optional)"
                 },
                 "deduplicate": {
@@ -125,7 +125,7 @@
                 },
                 "umi_separator": {
                     "type": "string",
-                    "default": ":",
+                    "default": "_",
                     "description": "UMI separator in the FastQ read name",
                     "fa_icon": "fas fa-barcode"
                 }
