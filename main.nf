@@ -566,7 +566,8 @@ process fastqc {
 if (params.move_umi) {
     process move_umi {
         tag "$name"
-        label 'process_medium'
+        cpus 2
+        memory '12 GB'
         publishDir "${params.outdir}/umi", mode: params.publish_dir_mode,
             saveAs: { filename ->
                         filename.indexOf(".zip") > 0 ? "zips/$filename" : "$filename"
@@ -760,7 +761,8 @@ process preseq {
 if (params.deduplicate) {
     process dedup {
         tag "$name"
-        label 'process_high'
+        cpus 2
+        memory '16 GB'
         publishDir "${params.outdir}/dedup", mode: params.publish_dir_mode
 
         input:
@@ -1163,7 +1165,7 @@ if ('piranha' in callers) {
 process clipqc {
     //label 'process_low'
     cpus 2
-    memory '5 GB'
+    memory '16 GB'
     publishDir "${params.outdir}/clipqc", mode: params.publish_dir_mode 
 
     input:
