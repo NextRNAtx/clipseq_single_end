@@ -762,7 +762,8 @@ if (params.deduplicate) {
     process dedup {
         tag "$name"
         cpus 2
-        memory '16 GB'
+        errorStrategy { task.attempt > 2 ? 'fail' : 'retry' }
+        memory  { 24.GB * task.attempt }
         publishDir "${params.outdir}/dedup", mode: params.publish_dir_mode
 
         input:
