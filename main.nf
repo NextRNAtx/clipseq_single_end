@@ -39,23 +39,6 @@ if (params.genomes && params.genome && !params.genomes.containsKey(params.genome
     exit 1, "The provided genome '${params.genome}' is not available in the iGenomes file. Currently the available genomes are ${params.genomes.keySet().join(", ")}"
 }
 
-// Option for user supplied fasta and gtf and pipeline supplied smRNA
-def smrna_list = ['human', 'mouse', 'rat', 'zebrafish', 'fruitfly', 'yeast']
-if (!params.genome && params.smrna_org) {
-    if (params.smrna_org in smrna_list) {
-        params.smrna_fasta = params.smrna[ params.smrna_org ].smrna_fasta
-    } else {
-        params.smrna_fasta = false
-        log.warn "There is no smRNA available for species '${params.smrna_org}'; pre-mapping will be skipped. Currently available options are: human, mouse, rat, fruitfly, zebrafish, yeast. Alternative you can supply your own smRNA fasta using --smrna_fasta"
-    }
-} else {
-    if (params.genome && params.smrna.containsKey(params.genome)) {
-        params.smrna_fasta = params.smrna[ params.genome ].smrna_fasta
-    } else {
-        params.smrna_fasta = false
-        log.warn "There is no smRNA available for species '${params.genome}'; pre-mapping will be skipped. Currently available options are: human, mouse, rat, fruitfly, zebrafish, yeast. Alternative you can supply your own smRNA fasta using --smrna_fasta"
-    }
-}
 
 // Auto-load genome files from genome config
 params.fasta = params.genome ? params.genomes[ params.genome ].fasta ?: false : false
@@ -72,19 +55,9 @@ checkPathParamList = [
     params.fasta,
     params.gtf,
     params.star_index,
-    params.smrna_fasta,
     params.fai
 ]
 for (param in checkPathParamList) { if (param) { file(param, checkIfExists: true) } }
-
-if(!params.smrna_fasta) {
-    if(params.genome) {
-        log.warn "There is no available smRNA fasta file associated with the provided genome '${params.genome}'; pre-mapping will be skipped. A smRNA fasta file can be specified on the command line with --smrna_fasta"
-    } else {
-        log.warn "There is no smRNA fasta file suppled for genome specified; pre-mapping will be skipped. A smRNA fasta file can be specified on the command line with --smrna_fasta or --smrna_org"
-    }
-}
-
 /*
 if(!params.input_control) {
     if(params.input_control) {
@@ -96,7 +69,7 @@ if(!params.input_control) {
 */
 /*---- Check Peakcaller Options ---*/
 
-callerList = [ 'icount', 'paraclu', 'pureclip', 'piranha']
+callerList = [ 'icount', 'clipper', 'pureclip']
 callers = params.peakcaller ? params.peakcaller.split(',').collect{ it.trim().toLowerCase() } : []
 if ((callerList + callers).unique().size() != callerList.size()) {
     exit 1, "Invalid variant calller option: ${params.peakcaller}. Valid options: ${callerList.join(', ')}"
@@ -145,7 +118,6 @@ ch_output_docs_images = file("$projectDir/docs/images/", checkIfExists: true)
 
 params.umi_separator = params.move_umi ? '_' : ':' // Define default as ':' unless moving UMI with UMItools in which case '_'
 
-if (params.smrna_fasta) ch_smrna_fasta = Channel.value(params.smrna_fasta)
 if (params.star_index) ch_star_index = Channel.value(params.star_index)
 if (params.gtf) ch_check_gtf = Channel.value(params.gtf)
 
@@ -153,22 +125,30 @@ if (params.gtf) ch_check_gtf = Channel.value(params.gtf)
 if (params.fai) ch_fai_crosslinks = Channel.value(params.fai)
 if (params.fai) ch_fai_icount = Channel.value(params.fai)
 if (params.fai) ch_fai_icount_motif = Channel.value(params.fai)
-if (params.fai) ch_fai_paraclu_motif = Channel.value(params.fai)
 if (params.fai) ch_fai_size = Channel.value(params.fai)
 
 // MultiQC empty channels from peakcaller checks
-if (!('paraclu' in callers)) ch_paraclu_qc = Channel.empty()
 if (!('icount' in callers) || !icount_check) ch_icount_qc = Channel.empty()
-if (!('piranha' in callers)) ch_piranha_qc = Channel.empty()
+if (!('clipper' in callers)) ch_clipper_qc = Channel.empty()
 if (!('pureclip' in callers)) ch_pureclip_qc = Channel.empty()
 
 if (params.input) {
     Channel
         .fromPath(params.input, checkIfExists: true)
         .splitCsv(header:true)
-        .map{ row -> [ row.sample, file(row.exp_fastq, checkIfExists: true), file(row.control_fastq, checkIfExists: true) ] }
-        .into{ ch_fastq; ch_fastq_fastqc_pretrim }
-        
+        .map{ row -> [ row.sample, "ip", file(row.exp_fastq, checkIfExists: true)] }
+        .into{ ch_fastq_ip; ch_fastq_fastqc_pretrim_ip }
+    Channel
+        .fromPath(params.input, checkIfExists: true)
+        .splitCsv(header:true)
+        .map{ row -> [ row.sample, "control", file(row.exp_fastq, checkIfExists: true) ] }
+        .into{ ch_fastq_c; ch_fastq_fastqc_pretrim_c }
+    
+    ch_fastq_ip.concat(ch_fastq_c)
+        .set{ch_fastq}
+    ch_fastq_fastqc_pretrim_ip.concat(ch_fastq_fastqc_pretrim_c)
+        .set{ch_fastq_fastqc_pretrim}
+
 } else {  
     exit 1, "Samples comma-separated input file not specified"
 }
@@ -190,8 +170,6 @@ if (params.fasta)                                summary['Fasta ref'] = params.f
 if (params.gtf)                                  summary['GTF ref'] = params.gtf
 if (params.star_index)                           summary['STAR index'] = params.star_index
 if (params.save_index)                           summary['Save STAR index?'] = params.save_index
-if (params.smrna_org)                            summary['SmallRNA organism ref'] = params.smrna_org
-if (params.smrna_fasta)                          summary['SmallRNA ref'] = params.smrna_fasta
 if (params.move_umi)                             summary['UMI pattern'] = params.move_umi
 if (params.deduplicate)                          summary['Deduplicate'] = params.deduplicate
 if (params.deduplicate && params.umi_separator)  summary['UMI separator'] = params.umi_separator
@@ -199,14 +177,9 @@ if (params.peakcaller)                           summary['Peak caller'] = params
 if (params.segment)                              summary['iCount segment'] = params.segment
 if (icount_check)                                summary['Half window'] = params.half_window
 if (icount_check)                                summary['Merge window'] = params.merge_window
-if ('paraclu' in callers)                        summary['Min value'] = params.min_value
-if ('paraclu' in callers)                        summary['Max density increase'] = params.min_density_increase
-if ('paraclu' in callers)                        summary['Max cluster length'] = params.max_cluster_length
 if ('pureclip' in callers)                       summary['Protein binding parameter'] = params.pureclip_bc
 if ('pureclip' in callers)                       summary['Crosslink merge distance'] = params.pureclip_dm
 if ('pureclip' in callers)                       summary['Chromosomes for HMM'] = params.pureclip_iv
-if ('piranha' in callers)                        summary['Bin size'] = params.bin_size_both
-if ('piranha' in callers)                        summary['Cluster distance'] = params.cluster_dist
 summary['Max Resources']                         = "$params.max_memory memory, $params.max_cpus cpus, $params.max_time time per job"
 if (workflow.containerEngine)                    summary['Container'] = "$workflow.containerEngine - $workflow.container"
 summary['Output dir']                            = params.outdir
@@ -280,11 +253,7 @@ process get_software_versions {
     bam2fq.py --version > v_rseqc.txt
     iCount --version > v_icount.txt
     pureclip --version > v_pureclip.txt
-    Piranha -about 2> v_piranha.txt
-    echo "9" > v_paraclu.txt # Paraclu does not output a version
-    meme -version > v_meme.txt
     python --version > v_python.txt
-    pygmentize -V > v_pygments.txt
     pigz --version 2> v_pigz.txt
     perl -v > v_perl.txt
 
@@ -295,27 +264,6 @@ process get_software_versions {
 ////////////////////////////////////////////////////
 /* --             PREPROCESSING                -- */
 ////////////////////////////////////////////////////
-
-/*
- * Generating premapping index
- */
-if (params.smrna_fasta) {
-    process generate_premap_index {
-        tag "$smrna_fasta"
-        label 'process_low'
-
-        input:
-        path(smrna_fasta) from ch_smrna_fasta
-
-        output:
-        path("${smrna_fasta.simpleName}.*.bt2") into ch_bt2_index
-
-        script:
-        """
-        bowtie2-build --threads $task.cpus $smrna_fasta ${smrna_fasta.simpleName}
-        """
-    }
-}
 
 /*
  * Decompression
@@ -394,7 +342,6 @@ if (!params.star_index) {
         }
     }
 
-    if (params.gtf) {
         if (hasExtension(params.gtf, 'gz')) {
             process decompress_gtf {
                 tag "$gtf_gz"
@@ -414,9 +361,8 @@ if (!params.star_index) {
                 """
             }
         }
-    }
+    
 
-    if (params.gtf) {
         process generate_star_index {
             tag "$fasta"
             // label 'process_high'
@@ -435,47 +381,26 @@ if (!params.star_index) {
             script:
             """
             samtools faidx $fasta
-            NUM_BASES=`awk '{sum = sum + \$2}END{if ((log(sum)/log(2))/2 - 1 > 14) {printf "%.0f", 14} else {printf "%.0f", (log(sum)/log(2))/2 - 1}}' ${fasta}.fai`
+            // NUM_BASES=`awk '{sum = sum + \$2}END{if ((log(sum)/log(2))/2 - 1 > 14) {printf "%.0f", 14} else {printf "%.0f", (log(sum)/log(2))/2 - 1}}' ${fasta}.fai`
 
             mkdir STAR_${fasta.baseName}
 
-            STAR \\
-                --runMode genomeGenerate \\
-                --runThreadN ${task.cpus} \\
-                --genomeDir STAR_${fasta.baseName} \\
-                --genomeFastaFiles $fasta \\
-                --genomeSAindexNbases \$NUM_BASES \\
-                --sjdbGTFfile $gtf
+            // STAR \\
+            //     --runMode genomeGenerate \\
+            //     --runThreadN ${task.cpus} \\
+            //     --genomeDir STAR_${fasta.baseName} \\
+            //     --genomeFastaFiles $fasta \\
+            //     --genomeSAindexNbases \$NUM_BASES \\
+            //     --sjdbGTFfile $gtf
+            STAR --runThreadN ${task.cpus} \\
+             --runMode genomeGenerate \\
+             --genomeDir STAR_${fasta.baseName} \\
+             --sjdbGTFﬁle $gtf \\
+             --genomeFastaFiles $fasta \\
+             --sjdbOverhang 99
             """
         }
-    } else if (!params.gtf) {
-        process generate_star_index_no_gtf {
-            tag "$fasta"
-            label 'process_high'
-            publishDir path: { params.save_index ? "${params.outdir}/STAR_index" : params.outdir },
-                saveAs: { params.save_index ? it : null }, mode: params.publish_dir_mode
-
-            input:
-            path(fasta) from ch_fasta
-
-            output:
-            path("STAR_${fasta.baseName}") into ch_star_index
-
-            script:
-            """
-            samtools faidx $fasta
-            NUM_BASES=`awk '{sum = sum + \$2}END{if ((log(sum)/log(2))/2 - 1 > 14) {printf "%.0f", 14} else {printf "%.0f", (log(sum)/log(2))/2 - 1}}' ${fasta}.fai`
-
-            mkdir STAR_${fasta.baseName}
-
-            STAR \\
-                --runMode genomeGenerate --runThreadN ${task.cpus} \\
-                --genomeDir STAR_${fasta.baseName} \\
-                --genomeFastaFiles $fasta \\
-                --genomeSAindexNbases \$NUM_BASES \\
-            """
-        }
-    }
+    
 }
 
 
@@ -531,32 +456,17 @@ process fastqc {
                 }
 
     input:
-    tuple val(name), path(read), path(control) from ch_fastq_fastqc_pretrim
+    tuple val(name), val(prefix), path(read) from ch_fastq_fastqc_pretrim
 
     output:
     file "*fastqc.{zip,html}" into ch_fastqc_pretrim_mqc
 
     script:
-    read_ext = read.getName().split('\\.', 2)[1]
-    read_name = read.getName().split('\\.', 2)[0]
-    new_read = "${name}_r_fastqc.${read_ext}"
-    new_read_simple = "${name}_r_fastqc"
-
-    control_ext = control.getName().split('\\.', 2)[1]
-    control_name = control.getName().split('\\.', 2)[0]
-    new_control = "${name}_c_fastqc.${control_ext}"
-    new_control_simple = "${name}_c_fastqc"
-
     """
-    cp ${read} ${new_read}
-    fastqc --quiet --threads $task.cpus ${new_read}
-    mv ${new_read_simple}*.html ${name}_r_fastqc.html
-    mv ${new_read_simple}*.zip ${name}_r_fastqc.zip
-
-    cp ${control} ${new_control}
-    fastqc --quiet --threads $task.cpus ${new_control}
-    mv ${new_control_simple}*.html ${name}_control_fastqc.html
-    mv ${new_control_simple}*.zip ${name}_control_fastqc.zip
+    #TODO
+    fastqc --quiet --threads $task.cpus ${read}
+    mv ${read}.html ${name}_${prefix}_r_fastqc.html
+    mv ${read}.zip ${name}_${prefix}_fastqc.zip
 
     """
 }
@@ -574,24 +484,20 @@ if (params.move_umi) {
                     }
 
         input:
-        tuple val(name), path(r), path(c) from ch_fastq
+        tuple val(name), val(prefix), path(r) from ch_fastq
 
         output:
-        tuple val(name), path("${name}.r.umi.fastq.gz"), path("${name}.c.umi.fastq.gz") into ch_umi_moved
+        tuple val(name), val(prefix), path("${name}.${prefix}.umi.fastq.gz") into ch_umi_moved
 
         script:
         """
         umi_tools \\
             extract \\
+            --random-seed 42 \\
             -p "$params.move_umi" \\
             -I $r \\
-            -S ${name}.r.umi.fastq.gz
-
-        umi_tools \\
-            extract \\
-            -p "$params.move_umi" \\
-            -I $c \\
-            -S ${name}.c.umi.fastq.gz
+            -S ${name}.${prefix}.umi.fastq.gz \\
+            --log ${name}.${prefix}.metrics
         """
     }
 } else {
@@ -610,59 +516,45 @@ process cutadapt {
     publishDir "${params.outdir}/cutadapt", mode: params.publish_dir_mode
 
     input:
-    tuple val(name), path(r), path(c) from ch_umi_moved // 
+    tuple val(name), val(prefix), path(r) from ch_umi_moved // 
 
     output:
-    tuple val(name), path("${name}.reads.trimmed.fastq.gz"), path("${name}.control.trimmed.fastq.gz") into ch_trimmed
+    tuple val(name), val(prefix), path("${name}.${prefix}.trimmed.fastq.gz") into ch_trimmed
 
     path "*.log" into ch_cutadapt_mqc
 
     script: // ln -s $reads ${name}.fastq.gz There is original file in testing folder put the "ln -s" back after testing is complete
     """
     
-    ln -s $r ${name}.reads.fastq.gz
-    cutadapt -j $task.cpus -a ${params.adapter}  -m 12 -o ${name}.reads.trimmed.fastq.gz ${name}.reads.fastq.gz > ${name}.reads_cutadapt.log 
+    #ln -s $r ${name}.reads.fastq.gz
+    # cutadapt -j $task.cpus -a ${params.adapter}  -m 12 \\
+    # -o ${name}.reads.trimmed.fastq.gz ${name}.reads.fastq.gz > ${name}.reads_cutadapt.log 
     
-    ln -s $c ${name}.control.fastq.gz
-    cutadapt -j $task.cpus -a ${params.adapter} -m 12 -o ${name}.control.trimmed.fastq.gz ${name}.control.fastq.gz > ${name}.control_cutadapt.log
+    cutadapt -j $task.cpus -O 1  -f fastq  --match-read-wildcards \\
+     --times 1 -e 0.1 --quality-cutoff 6  -m 18 \\
+    -o ${name}.${prefix}.tmp.fastq.gz  -a AGATCGGAAGAGCAC \\
+    -a GATCGGAAGAGCACA  -a ATCGGAAGAGCACAC  -a TCGGAAGAGCACACG \\
+    -a CGGAAGAGCACACGT  -a GGAAGAGCACACGTC  -a GAAGAGCACACGTCT \\ 
+    -a AAGAGCACACGTCTG  -a AGAGCACACGTCTGA  -a GAGCACACGTCTGAA \\ 
+    -a AGCACACGTCTGAAC  -a GCACACGTCTGAACT  -a CACACGTCTGAACTC \\ 
+    -a ACACGTCTGAACTCC  -a CACGTCTGAACTCCA  -a ACGTCTGAACTCCAG \\ 
+    -a CGTCTGAACTCCAGT  -a GTCTGAACTCCAGTC  -a TCTGAACTCCAGTCA \\ 
+    -a CTGAACTCCAGTCAC  $r > ${name}.${prefix}.reads_cutadapt1.log 
+
+    cutadapt -j $task.cpus -O 1  -f fastq  --match-read-wildcards \\
+     --times 1 -e 0.1 --quality-cutoff 6  -m 18 \\
+    -o ${name}.${prefix}.trimmed.fastq.gz  -a AGATCGGAAGAGCAC \\
+    -a GATCGGAAGAGCACA  -a ATCGGAAGAGCACAC  -a TCGGAAGAGCACACG \\
+    -a CGGAAGAGCACACGT  -a GGAAGAGCACACGTC  -a GAAGAGCACACGTCT \\ 
+    -a AAGAGCACACGTCTG  -a AGAGCACACGTCTGA  -a GAGCACACGTCTGAA \\ 
+    -a AGCACACGTCTGAAC  -a GCACACGTCTGAACT  -a CACACGTCTGAACTC \\ 
+    -a ACACGTCTGAACTCC  -a CACGTCTGAACTCCA  -a ACGTCTGAACTCCAG \\ 
+    -a CGTCTGAACTCCAGT  -a GTCTGAACTCCAGTC  -a TCTGAACTCCAGTCA \\ 
+    -a CTGAACTCCAGTCAC  ${name}.${prefix}.tmp.fastq.gz > ${name}.${prefix}.reads_cutadapt2.log 
     """
 }
-/*
- * STEP 3 - Premapping
- */
-if (params.smrna_fasta) {
 
-    process premap {
-        tag "$name"
-        label 'process_high'
-        publishDir "${params.outdir}/premap", mode: params.publish_dir_mode
 
-        input:
-        tuple val(name), path(r), path(c) from ch_trimmed
-        path(index) from ch_bt2_index.collect()
-
-        output:
-        tuple val(name), path("${name}.r.unmapped.fastq.gz"), path("${name}.c.unmapped.fastq.gz") into ch_unmapped
-        tuple val(name), path("${name}.r.premapped.bam"), path("${name}.r.premapped.bam.bai"), path("${name}.c.premapped.bam"), path("${name}.c.premapped.bam.bai")
-
-        path "*.log" into ch_premap_mqc, ch_premap_qc
-
-        script:
-        """
-        bowtie2 -p $task.cpus -x ${index[0].simpleName} --un-gz ${name}.r.unmapped.fastq.gz -U $r 2> ${name}.r.premap.log | \
-        samtools sort -@ $task.cpus /dev/stdin > ${name}.r.premapped.bam && \
-        samtools index -@ $task.cpus ${name}.r.premapped.bam
-
-        bowtie2 -p $task.cpus -x ${index[0].simpleName} --un-gz ${name}.c.unmapped.fastq.gz -U $c 2> ${name}.c.premap.log | \
-        samtools sort -@ $task.cpus /dev/stdin > ${name}.c.premapped.bam && \
-        samtools index -@ $task.cpus ${name}.c.premapped.bam
-        """
-    }
-} else {
-    ch_unmapped = ch_trimmed
-    ch_premap_mqc = Channel.empty()
-    ch_premap_qc = Channel.empty()
-}
 //ch_trimmed.dump()
 /*
  * STEP 4 - Aligning
@@ -675,47 +567,37 @@ process align {
     publishDir "${params.outdir}/mapped", mode: params.publish_dir_mode
 
     input:
-    tuple val(name), path(r), path(c) from ch_unmapped
+    tuple val(name), val(prefix), path(r) from ch_trimmed
     path(index) from ch_star_index.collect()
 
     output:
-    tuple val(name), path("${name}.Aligned.sortedByCoord.out.bam"), path("${name}.Aligned.sortedByCoord.out.bam.bai"), path("${name}.control.Aligned.sortedByCoord.out.bam"), path("${name}.control.Aligned.sortedByCoord.out.bam.bai") into ch_aligned, ch_aligned_preseq
+    tuple val(name), val(prefix), path("${name}.${prefix}.sorted.bam"), path("${name}.${prefix}.sorted.bam.bai") into ch_aligned, ch_aligned_preseq
     path "*.Log.final.out" into ch_align_mqc, ch_align_qc
 
     script:
-    clip_args = "--outFilterMultimapNmax 1 \
-                --outFilterMultimapScoreRange 1 \
-                --outSAMattributes All \
-                --alignSJoverhangMin 8 \
-                --alignSJDBoverhangMin 1 \
-                --outFilterType BySJout \
-                --alignIntronMin 20 \
-                --alignIntronMax 1000000 \
-                --outFilterScoreMin 10  \
-                --alignEndsType Extend5pOfRead1 \
-                --twopassMode Basic \
-                --outSAMtype BAM Unsorted"
-
     """
-    STAR \\
-        --runThreadN $task.cpus \\
-        --runMode alignReads \\
-        --genomeDir $index \\
-        --readFilesIn $r --readFilesCommand gunzip -c \\
-        --outFileNamePrefix ${name}. $clip_args
+    #STAR \\
+    #    --runThreadN $task.cpus \\
+    #    --runMode alignReads \\
+    #    --genomeDir $index \\
+    #    --readFilesIn $r --readFilesCommand gunzip -c \\
+    #    --outFileNamePrefix ${name}. $clip_args
 
-    samtools sort -@ $task.cpus -o ${name}.Aligned.sortedByCoord.out.bam ${name}.Aligned.out.bam
-    samtools index -@ $task.cpus ${name}.Aligned.sortedByCoord.out.bam
+    STAR --alignEndsType EndToEnd --genomeDir $index \\ 
+        --genomeLoad NoSharedMemory --outBAMcompression 10 \\ 
+        --outFileNamePreﬁx ${name}.${prefix} --outFilterMultimapNmax 1 \\ 
+        --outFilterMultimapScoreRange 1 --outFilterScoreMin 10 --outFilterType BySJout \\ 
+        --outReadsUnmapped Fastx --outSAMattrRGline ID:${name}.${prefix}  --outSAMattributes All \\ 
+        --outSAMmode Full --outSAMtype BAM Unsorted --outSAMunmapped Within \\ 
+        --outStd Log --readFilesIn $r --readFilesCommand gunzip -c \\
+        --runMode alignReads --runThreadN $task.cpus
 
-    STAR \\
-        --runThreadN $task.cpus \\
-        --runMode alignReads \\
-        --genomeDir $index \\
-        --readFilesIn $c --readFilesCommand gunzip -c \\
-        --outFileNamePrefix ${name}.control. $clip_args
-
-    samtools sort -@ $task.cpus -o ${name}.control.Aligned.sortedByCoord.out.bam ${name}.control.Aligned.out.bam
-    samtools index -@ $task.cpus ${name}.control.Aligned.sortedByCoord.out.bam
+    # samtools sort -@ $task.cpus -o ${name}.${prefix}.Aligned.sortedByCoord.out.bam ${name}.${prefix}.Aligned.out.bam
+    samtools sort -n -o ${name}.${prefix}.name.sorted.bam \\ 
+      ${name}.${prefix}.Aligned.out.bam
+    samtools sort -o${name}.${prefix}.sorted.bam \\
+      ${name}.${prefix}.name.sorted.bam
+    samtools index -@ $task.cpus ${name}.${prefix}.sorted.bam
     """
 }
 //ch_align_qc.dump()
@@ -730,7 +612,7 @@ process preseq {
     publishDir "${params.outdir}/preseq", mode: params.publish_dir_mode
 
     input:
-    tuple val(name), path(bam), path(bai), path(bam_control), path(bai_control) from ch_aligned_preseq
+    tuple val(name), val(prefix), path(bam), path(bai) from ch_aligned_preseq
 
     output:
     path '*.ccurve.txt' into ch_preseq_mqc
@@ -739,19 +621,13 @@ process preseq {
     script:
     """
     preseq lc_extrap \\
-        -output ${name}.ccurve.txt \\
+        -output ${name}.${prefix}.ccurve.txt \\
         -verbose \\
         -bam \\
         -seed 42 \\
         $bam
-    cp .command.err ${name}.command.log
-    preseq lc_extrap \\
-        -output ${name}.control.ccurve.txt \\
-        -verbose \\
-        -bam \\
-        -seed 42 \\
-        $bam_control
-    cp .command.err ${name}.control.command.log
+    cp .command.err ${name}.${prefix}.command.log
+
     """
 }
 
@@ -767,31 +643,29 @@ if (params.deduplicate) {
         publishDir "${params.outdir}/dedup", mode: params.publish_dir_mode
 
         input:
-        tuple val(name), path(bam), path(bai), path(bam_control), path(bai_control)from ch_aligned
+        tuple val(name), val(prefix), path(bam), path(bai) from ch_aligned
 
         output:
-        tuple val(name), path("${name}.dedup.bam"), path("${name}.dedup.bam.bai"), path("${name}.control.dedup.bam"), path("${name}.control.dedup.bam.bai") into ch_dedup, ch_dedup_pureclip, ch_dedup_rseqc
+        tuple val(name), val(prefix), path("${name}.${prefix}.dedup.sorted.bam"), path("${name}.${prefix}.dedup.sorted.bai") into ch_dedup, ch_dedup_peaks, ch_dedup_rseqc
         path "*.log" into ch_dedup_mqc, ch_dedup_qc
 
         script:
         """
-        umi_tools \\
-            dedup \\
-            --umi-separator="$params.umi_separator" \\
-            -I $bam \\
-            -S ${name}.dedup.bam \\
-            --output-stats=${name} \\
-            --log=${name}.log
-        samtools index -@ $task.cpus ${name}.dedup.bam
-
-        umi_tools \\
-            dedup \\
-            --umi-separator="$params.umi_separator" \\
-            -I $bam_control \\
-            -S ${name}.control.dedup.bam \\
-            --output-stats=${name}.control \\
-            --log=${name}.control.log
-        samtools index -@ $task.cpus ${name}.control.dedup.bam
+        #umi_tools \\
+        #    dedup \\
+        #    --umi-separator="$params.umi_separator" \\
+        #    -I $bam \\
+        #    -S ${name}.dedup.bam \\
+        #    --output-stats=${name} \\
+        #    --log=${name}.log
+        umi_tools dedup --random-seed 42 \\ 
+          -I $bam --method unique \\ 
+          --umi-separator="$params.umi_separator" \\
+          --output-stats ${name}.ip \\ 
+          -S ${name}.${prefix}.dedup.bam \\
+          --log=${name}.${prefix}.log
+        samtools sort -o ${name}.${prefix}.dedup.sorted.bam  ${name}.${prefix}.dedup.bam 
+        samtools index -@ $task.cpus ${name}.${prefix}.dedup.sorted.bam
         """
     }
 } else {
@@ -819,7 +693,7 @@ if (params.gtf) {
         publishDir "${params.outdir}/rseqc", mode: params.publish_dir_mode
 
         input:
-        tuple val(name), path(bam), path(bai), path(bam_control), path(bai_control) from ch_dedup_rseqc
+        tuple val(name), val(prefix), path(bam), path(bai) from ch_dedup_rseqc
         path(gtf) from ch_gtf_rseqc.collect()
 
         output:
@@ -832,14 +706,7 @@ if (params.gtf) {
         read_distribution.py \\
             -i $bam \\
             -r gene.bed \\
-            > ${name}.read_distribution.txt
-
-        gtf2bed $gtf > gene.bed
-
-        read_distribution.py \\
-            -i $bam_control \\
-            -r gene.bed \\
-            > ${name}.control.read_distribution.txt
+            > ${name}.${prefix}.read_distribution.txt
         """
     }
 } else {
@@ -857,12 +724,12 @@ process get_crosslinks {
     publishDir "${params.outdir}/xlinks", mode: params.publish_dir_mode
 
     input:
-    tuple val(name), path(bam), path(bai), path(bam_control), path(bai_control) from ch_dedup
+    tuple val(name), val(prefix), path(bam), path(bai) from ch_dedup
     path(fai) from ch_fai_crosslinks.collect()
 
     output:
-    tuple val(name), path("${name}.xl.bed.gz"), path("${name}.control.xl.bed.gz") into ch_xlinks_icount, ch_xlinks_paraclu, ch_xlinks_piranha
-    tuple val(name), path("${name}.xl.bedgraph.gz"), path("${name}.control.xl.bedgraph.gz") into ch_xlinks_bedgraphs
+    tuple val(name), val(prefix), path("${name}.${prefix}.xl.bed.gz")) into ch_xlinks_icount
+    tuple val(name), val(prefix), path("${name}.${prefix}xl.bedgraph.gz") into ch_xlinks_bedgraphs
     path "*.xl.bed.gz" into ch_xlinks_qc
 
     script:
@@ -871,15 +738,17 @@ process get_crosslinks {
     bedtools shift -m 1 -p -1 -i dedup.bed -g $fai > shifted.bed
     bedtools genomecov -dz -strand + -5 -i shifted.bed -g $fai | awk '{OFS="\t"}{print \$1, \$2, \$2+1, ".", \$3, "+"}' > pos.bed
     bedtools genomecov -dz -strand - -5 -i shifted.bed -g $fai | awk '{OFS="\t"}{print \$1, \$2, \$2+1, ".", \$3, "-"}' > neg.bed
-    cat pos.bed neg.bed | sort -k1,1 -k2,2n | pigz > ${name}.xl.bed.gz
-    zcat ${name}.xl.bed.gz | awk '{OFS = "\t"}{if (\$6 == "+") {print \$1, \$2, \$3, \$5} else {print \$1, \$2, \$3, -\$5}}' | pigz > ${name}.xl.bedgraph.gz
+    cat pos.bed neg.bed | sort -k1,1 -k2,2n | pigz > ${name}.${prefix}.xl.bed.gz
+    zcat ${name}.${prefix}.xl.bed.gz | awk '{OFS = "\t"}{if (\$6 == "+") {print \$1, \$2, \$3, \$5} else {print \$1, \$2, \$3, -\$5}}' | pigz > ${name}.${prefix}.xl.bedgraph.gz
     
-    bedtools bamtobed -i $bam_control > ${name}.control.xl.bed
-    bgzip ${name}.control.xl.bed
-    zcat ${name}.control.xl.bed.gz | awk '{OFS = "\t"}{if (\$6 == "+") {print \$1, \$2, \$3, \$5} else {print \$1, \$2, \$3, -\$5}}' | pigz > ${name}.control.xl.bedgraph.gz
     """
 
 }
+
+ch_dedup_peaks
+    .groupTuple()
+    .view()
+    .set{ch_pairs}
 
 /*
  * STEP 8a - Peak-call (iCount)
@@ -891,12 +760,12 @@ if (params.peakcaller && icount_check) {
         publishDir "${params.outdir}/icount", mode: params.publish_dir_mode
 
         input:
-        tuple val(name), path(xlinks) from ch_xlinks_icount
+        tuple val(name), val(prefix), path(xlinks) from ch_xlinks_icount
         path(segment) from ch_segment.collect()
 
         output:
-        tuple val(name), path("${name}.${half_window}nt.sigxl.bed.gz") into ch_sigxls_icount
-        tuple val(name), path("${name}.${half_window}nt_${merge_window}nt.peaks.bed.gz") into ch_peaks_icount
+        tuple val(name), path("${name}.${prefix}.${half_window}nt.sigxl.bed.gz") into ch_sigxls_icount
+        tuple val(name), path("${name}.${prefix}.${half_window}nt_${merge_window}nt.peaks.bed.gz") into ch_peaks_icount
         path "*.peaks.bed.gz" into ch_icount_qc
 
         script:
@@ -906,12 +775,12 @@ if (params.peakcaller && icount_check) {
         mkdir tmp
         export ICOUNT_TMP_ROOT=\$PWD/tmp
 
-        iCount peaks $segment $xlinks ${name}.${half_window}nt.sigxl.bed.gz --half_window ${half_window} --fdr 0.05
+        iCount peaks $segment $xlinks ${name}.${prefix}.${half_window}nt.sigxl.bed.gz --half_window ${half_window} --fdr 0.05
 
-        pigz -d -c ${name}.${half_window}nt.sigxl.bed.gz | \\
+        pigz -d -c ${name}.${prefix}.${half_window}nt.sigxl.bed.gz | \\
         bedtools sort | \\
         bedtools merge -s -d ${merge_window} -c 4,5,6 -o distinct,sum,distinct | \\
-        pigz > ${name}.${half_window}nt_${merge_window}nt.peaks.bed.gz
+        pigz > ${name}.${prefix}.${half_window}nt_${merge_window}nt.peaks.bed.gz
         """
     }
 
@@ -945,70 +814,44 @@ if (params.peakcaller && icount_check) {
 }
 
 /*
- * STEP 8b - Peak-call (paraclu)
+ * STEP 8c - Peak-call (PureCLIP)
  */
-if ('paraclu' in callers) {
-    process paraclu_peak_call {
+if ('clipper' in callers) {
+    process clipper_call {
         tag "$name"
-        label 'process_low'
-        publishDir "${params.outdir}/paraclu", mode: params.publish_dir_mode
-
-        when:
-        'paraclu' in callers
+        cpus 6
+        memory '48 GB'
+        // label 'process_high'
+        publishDir "${params.outdir}/clipper", mode: params.publish_dir_mode
 
         input:
-        tuple val(name), path(xlinks) from ch_xlinks_paraclu
+        tuple val(name), val(ip), path(bam), path(bai), val(input), path(bam_control), path(bai_control) from ch_pairs
+        path(fasta) from ch_fasta_clipper.collect()
 
         output:
-        tuple val(name), path("${name}.${min_value}_${max_cluster_length}nt_${min_density_increase}.peaks.bed.gz") into ch_peaks_paraclu
-        path "*.peaks.bed.gz" into ch_paraclu_qc
+        tuple val(name), path("${name}.bed") into ch_peaks_clipper_raw
+        tuple val(name), path("${name}.peakClusters.normed.compressed.bed") into ch_peaks_clipper
+        path "*.peaks.bed.gz" into ch_pureclip_qc
 
         script:
-        min_value = params.min_value
-        min_density_increase = params.min_density_increase
-        max_cluster_length = params.max_cluster_length
         """
-        pigz -d -c $xlinks | \\
-        awk '{OFS = "\t"}{print \$1, \$6, \$3, \$5}' | \\
-        sort -k1,1 -k2,2 -k3,3n > paraclu_input.tsv
+        #peaks
+        clipper --species GRCh38_v29e --bam $bam --outﬁle ${name}.bed
 
-        paraclu ${min_value} paraclu_input.tsv | \\
-        paraclu-cut -d ${min_density_increase} -l ${max_cluster_length} | \\
-        awk '{OFS = "\t"}{print \$1, \$3-1, \$4, ".", \$6, \$2}' | \\
-        bedtools sort | \\
-        pigz > ${name}.${min_value}_${max_cluster_length}nt_${min_density_increase}.peaks.bed.gz
+        # normalize with SMinput
+        samtools view -cF 4 $bam > ip_mapped_readnum.txt 
+        samtools view -cF 4 $bam_control > input_mapped_readnum.txt
+
+        overlap_peakﬁ_with_bam.pl $bam $bam_control  ${name}.bed \\
+          ip_mapped_readnum.txt  input_mapped_readnum.txt \\ 
+          ${name}.peakClusters.normed.bed
+
+        #merge overlapping peaks:
+        compress_l2foldenrpeakﬁ_for_replicate_overlapping_bedformat.pl \\ 
+          ${name}.peakClusters.normed.bed \\ 
+          ${name}.peakClusters.normed.compressed.bed
+
         """
-    }
-
-    if (params.motif) {
-        process paraclu_motif_dreme {
-            tag "$name"
-            label 'process_low'
-            publishDir "${params.outdir}/paraclu_motif", mode: params.publish_dir_mode
-
-            when:
-            'paraclu' in callers
-
-            input:
-            tuple val(name), path(peaks) from ch_peaks_paraclu
-            path(fasta) from ch_fasta_dreme_paraclu.collect()
-            path(fai) from ch_fai_paraclu_motif.collect()
-
-            output:
-            tuple val(name), path("${name}_dreme/*") into ch_motif_dreme_paraclu
-
-            script:
-            motif_sample = params.motif_sample
-            """
-            pigz -d -c $peaks | awk '{OFS="\t"}{if(\$6 == "+") print \$1, \$2, \$2+1, \$4, \$5, \$6; else print \$1, \$3-1, \$3, \$4, \$5, \$6}' | \\
-            bedtools slop -s -l 20 -r 20 -i /dev/stdin -g $fai | \\
-            shuf -n $motif_sample > resized_peaks.bed
-
-            bedtools getfasta -fi $fasta -bed resized_peaks.bed -fo resized_peaks.fasta
-
-            dreme -norc -o ${name}_dreme -p resized_peaks.fasta
-            """
-        }
     }
 }
 
@@ -1027,7 +870,7 @@ if ('pureclip' in callers) {
         'pureclip' in callers
 
         input:
-        tuple val(name), path(bam), path(bai), path(bam_control), path(bai_control) from ch_dedup_pureclip
+        tuple val(name), val(ip), path(bam), path(bai), val(input), path(bam_control), path(bai_control) from ch_pairs
         path(fasta) from ch_fasta_pureclip.collect()
 
         output:
@@ -1085,80 +928,6 @@ if ('pureclip' in callers) {
         }
     }
 }
-/*
- * STEP 8d - Peak-call (Piranha)
- */
-if ('piranha' in callers) {
-    process piranha_peak_call {
-        tag "$name"
-        cpus 16
-        memory '36 GB'
-        // label 'process_high'
-        publishDir "${params.outdir}/piranha", mode: params.publish_dir_mode
-
-        when:
-        'piranha' in callers
-
-        input:
-        tuple val(name), path(xlinks_exp), path(xlinks_control) from ch_xlinks_piranha
-
-        output:
-        // tuple val(name), path("${name}.${bin_size_both}nt_${cluster_dist}nt.peaks.bed.gz"), path("${name}.${bin_size_both}nt_${cluster_dist}control.nt.peaks.bed.gz") into ch_peaks_piranha
-        path "*.peaks.bed.gz" into ch_piranha_qc
-
-        script:
-        bin_size_both = params.bin_size_both
-        cluster_dist = params.cluster_dist
-        """
-        pigz -d -c $xlinks_exp | \\
-        awk '{OFS="\t"}{for(i=0;i<\$5;i++) print }' \\
-        > expanded.bed
-         pigz -d -c $xlinks_control | \\
-        awk '{OFS="\t"}{for(i=0;i<\$5;i++) print }' \\
-        > control.expanded.bed
-
-        Piranha \\
-            expanded.bed control.expanded.bed\\
-            -i $bin_size_both \\
-            -s \\
-            -b $bin_size_both \\
-            -u $cluster_dist \\
-            -o piranha.bed
-
-        awk '{OFS="\t"}{print \$1, \$2, \$3, ".", \$5, \$6}' piranha.bed | \\
-        pigz > ${name}.${bin_size_both}nt_${cluster_dist}nt.peaks.bed.gz
-        """
-    }
-
-
-    if (params.motif) {
-        process piranha_motif_dreme {
-            tag "$name"
-            label 'process_low'
-            publishDir "${params.outdir}/piranha_motif", mode: params.publish_dir_mode
-
-            input:
-            tuple val(name), path(peaks) from ch_peaks_piranha
-            path(fasta) from ch_fasta_dreme_piranha.collect()
-            path(fai) from ch_fai_piranha_motif.collect()
-
-            output:
-            tuple val(name), path("${name}_dreme/*") into ch_motif_dreme_piranha
-
-            script:
-            motif_sample = params.motif_sample
-            """
-            pigz -d -c $peaks | awk '{OFS="\t"}{if(\$6 == "+") print \$1, \$2, \$2+1, \$4, \$5, \$6; else print \$1, \$3-1, \$3, \$4, \$5, \$6}' | \\
-            bedtools slop -s -l 20 -r 20 -i /dev/stdin -g $fai | \\
-            shuf -n $motif_sample > resized_peaks.bed
-
-            bedtools getfasta -fi $fasta -bed resized_peaks.bed -fo resized_peaks.fasta
-
-            dreme -norc -o ${name}_dreme -p resized_peaks.fasta
-            """
-        }
-    }
-}
 
 /*
  * STEP 8 - QC plots
@@ -1175,9 +944,7 @@ process clipqc {
     file ('dedup/*') from ch_dedup_qc.collect().ifEmpty([])
     file ('xlinks/*') from ch_xlinks_qc.collect().ifEmpty([])
     path ('icount/*') from ch_icount_qc.collect().ifEmpty([])
-    file ('paraclu/*') from ch_paraclu_qc.collect().ifEmpty([])
     file ('pureclip/*') from ch_pureclip_qc.collect().ifEmpty([])
-    file ('piranha/*') from ch_piranha_qc.collect().ifEmpty([])
 
     output:
     path "*.tsv" into ch_clipqc_mqc
@@ -1189,17 +956,10 @@ process clipqc {
         clip_qc_args += ' icount '
     }
 
-    if ('paraclu' in callers) {
-        clip_qc_args += ' paraclu '
-    }
-
     if ('pureclip' in callers) {
         clip_qc_args += ' pureclip '
     }
 
-    if ('piranha' in callers) {
-        clip_qc_args += ' piranha '
-    }
 
     """
     clip_qc.py $clip_qc_args
@@ -1220,7 +980,7 @@ process multiqc {
     file (mqc_custom_config) from ch_multiqc_custom_config.collect().ifEmpty([])
     file ('fastqc/*') from ch_fastqc_pretrim_mqc.collect().ifEmpty([])
     file ('cutadapt/*') from ch_cutadapt_mqc.collect().ifEmpty([])
-    file ('premap/*') from ch_premap_mqc.collect().ifEmpty([])
+    //file ('premap/*') from ch_premap_mqc.collect().ifEmpty([])
     file ('mapped/*') from ch_align_mqc.collect().ifEmpty([])
     path ('preseq/*') from ch_preseq_mqc.collect().ifEmpty([])
     path ('rseqc/*') from ch_rseqc_mqc.collect().ifEmpty([])
